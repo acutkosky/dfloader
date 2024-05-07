@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dfloader"
+dynamic = ["version"]
+description = ''
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "Ashok Cutkosky", email = "ashok@cutkosky.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+  "pandas",
+  "numpy"
+  "dask"
+  "loadit"
+]
+
+[project.urls]
+Documentation = "https://github.com/unknown/dfloader#readme"
+Issues = "https://github.com/unknown/dfloader/issues"
+Source = "https://github.com/unknown/dfloader"
+
+[tool.hatch.version]
+path = "dfloader/__about__.py"
+
+[tool.hatch.envs.default]
+dependencies = [
+  "coverage[toml]>=6.5",
+  "pytest",
+]
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:tests}"
+test-cov = "coverage run -m pytest {args:tests}"
+cov-report = [
+  "- coverage combine",
+  "coverage report",
+]
+cov = [
+  "test-cov",
+  "cov-report",
+]
+
+[[tool.hatch.envs.all.matrix]]
+python = ["3.8", "3.9", "3.10", "3.11", "3.12"]
+
+[tool.hatch.envs.types]
+dependencies = [
+  "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:dfloader tests}"
+
+[tool.coverage.run]
+source_pkgs = ["dfloader", "tests"]
+branch = true
+parallel = true
+omit = [
+  "dfloader/__about__.py",
+]
+
+[tool.coverage.paths]
+dfloader = ["dfloader", "*/dfloader/dfloader"]
+tests = ["tests", "*/dfloader/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
