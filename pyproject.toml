@@ -26,9 +26,9 @@ classifiers = [
 ]
 dependencies = [
   "pandas",
-  "numpy"
-  "dask"
-  "loadit"
+  "numpy",
+  "dask",
+  "loadit",
 ]
 
 [project.urls]
