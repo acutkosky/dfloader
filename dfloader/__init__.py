@@ -10,6 +10,18 @@ import collections
 import loadit
 
 
+def drop_non_numeric_columns(df):
+    # mostly copied from chatgpt :)
+    def is_numeric_series(series):
+        # Attempt to convert series to numeric, non-convertible entries will be NaN
+        numeric_series = pd.to_numeric(series, errors='coerce')
+        # If all original NaNs are still NaN and all non-NaNs are converted to numeric, then it's a numeric column
+        return numeric_series.notna().equals(series.notna())
+
+    # Apply this function to each column and filter out non-numeric columns
+    numeric_columns = [col for col in df.columns if is_numeric_series(df[col])]
+    return df[numeric_columns]
+
 class Dataset(collections.abc.Sequence):
     def __init__(
         self,
@@ -20,7 +32,8 @@ class Dataset(collections.abc.Sequence):
         start_idx: Optional[int] = 0,
         allow_incomplete_context: bool = False,
         columns: Optional[Sequence[str]] = None,
-        drop_non_numeric: bool = True,
+        drop_non_numeric: bool = False,
+        drop_na: bool = True,
     ):
         self.using_dask = isinstance(df, dd.DataFrame)
 
@@ -38,6 +51,7 @@ class Dataset(collections.abc.Sequence):
             start_idx = self.context_length - 1
         self.start_idx = start_idx
         self.drop_non_numeric = drop_non_numeric
+        self.drop_na = drop_na
 
         self.allow_incomplete_context = allow_incomplete_context
 
@@ -76,7 +90,6 @@ class Dataset(collections.abc.Sequence):
             results = results.compute()
         results = results.copy()
         results["__contextmask__"] = results.notna().all(axis=1)
-        # results['__labelmask__'] = results['__contextmask__']
 
         if end_padding > 0:
             end_rows = pd.concat([results.iloc[[-1]]] * end_padding)
@@ -97,9 +110,12 @@ class Dataset(collections.abc.Sequence):
         results.iloc[:label_start, results.columns.get_loc("__labelmask__")] = False
 
         if self.drop_non_numeric:
-            results = results.apply(
-                pd.to_numeric, errors="coerce"
-            )  # This will convert non-numerics to NaN in numeric columns
+            results = drop_non_numeric_columns(results)
+            # results = results.apply(
+            #     pd.to_numeric, errors="coerce"
+            # )  # This will convert non-numerics to NaN in numeric columns
+            # results = results.dropna()
+        if self.drop_na:
             results = results.dropna()
 
         results = results.to_dict(orient="list")
