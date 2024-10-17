@@ -4,13 +4,13 @@
 
 import numpy as np
 import pandas as pd
-from typing import Sequence, Optional, Union
+from typing import Sequence, Optional, Union, List
 import dask.dataframe as dd
 import collections
 import loadit
 
 
-def drop_non_numeric_columns(df):
+def drop_non_numeric_columns(df: Union[pd.DataFrame, dd.DataFrame]):
     # mostly copied from chatgpt :)
     def is_numeric_series(series):
         # Attempt to convert series to numeric, non-convertible entries will be NaN
@@ -20,107 +20,192 @@ def drop_non_numeric_columns(df):
 
     # Apply this function to each column and filter out non-numeric columns
     numeric_columns = [col for col in df.columns if is_numeric_series(df[col])]
+    if len(numeric_columns) == len(df.columns):
+        return df
     return df[numeric_columns]
+
+def same_lists(l1, l2):
+    if len(l1)!=len(l2):
+        return False
+    for a,b in zip(l1,l2):
+        if a!=b:
+            return False
+    return True
+
+def is_dataframe(df):
+    return isinstance(df, pd.DataFrame) or isinstance(df, dd.DataFrame)
 
 class Dataset(collections.abc.Sequence):
     def __init__(
         self,
         df: Union[pd.DataFrame, dd.DataFrame],
+        batch_size: int = 1,
         context_length: int = 1,
-        stride: Optional[int] = 1,
-        label_length: Optional[int] = None,
-        start_idx: Optional[int] = 0,
-        allow_incomplete_context: bool = False,
-        columns: Optional[Sequence[str]] = None,
-        drop_non_numeric: bool = False,
-        drop_na: bool = True,
+        stride: int = 1,
+        start_idx: int = 0,
+        use_entire_df: bool = True,
+        shuffle_seed: Optional[int] = None,
+        skip_index_check: bool = False,
+        return_type: str = 'numpy',
+        columns: List[str] = [],
     ):
-        self.using_dask = isinstance(df, dd.DataFrame)
 
-        if columns is None:
-            columns = df.columns
-        self.df = df[columns]
+
+        if return_type not  in ['numpy', 'dict']:
+            raise ValueError(f"Unknown return type: {return_type}")
+        self.return_type = return_type
+
+        self.columns = columns + ['__mask__']
+        if is_dataframe(df):
+            if columns != []:
+                if not same_lists(columns, list(df.columns)):
+                    raise ValueError("provided columns argument is not the same as df.columns")
+            self.columns  = list(df.columns) + ['__mask__']
+
+        if isinstance(df, np.ndarray) and return_type == 'dict':
+            if  len(columns) != df.shape[-1]:
+                raise ValueError("number of column names does not match number of data columns")
+
+
+        if is_dataframe(df):
+            self.mask_dtype = bool
+        else:
+            self.mask_dtype = df.dtype
+
+        self.df = df
+
         self.context_length = context_length
-        self.columns = columns
+        self.batch_size = batch_size
         self.stride = stride
-        if label_length is None:
-            label_length = stride
-
-        self.label_length = label_length
-        if start_idx is None:
-            start_idx = self.context_length - 1
         self.start_idx = start_idx
-        self.drop_non_numeric = drop_non_numeric
-        self.drop_na = drop_na
+        self.use_entire_df = use_entire_df
 
-        self.allow_incomplete_context = allow_incomplete_context
+        # we should think of the input df as an array of shape [L, C].
+        # Each output of this loader will have shape:
+        # [B, C + K, T] where B is batch_size, T is context_length and K represents
+        # some extra  columns that will be described shortly.
+        # That is, this loader can be viewed as an [N, B, C + K, T] dimensional array
+
+        
+        # To gain intuition about what this loader outputs, we do some calculations
+        # regarding loader[:, :C, T] (that is, ignoring the extra K columns for a moment)
+        
+        # First, assuming start_idx = 0 and B=1, we have:
+        # loader[n, 0, c, t] = df[n*stride+t - T +1 , c]
+        # Where we fill df[-x, c] = df[0, x] for x>0
+        # That is, loader[n, 0, c, :] is the T consecutive elements of df[:, c] ending
+        # at index n*stride.
+        # When start_idx = S, we instead set:
+        # loader[n, 0, c, t] = df[S + n*stride+t - T +1 , c]
+
+        # In general, when B>1:
+        # loader[n, b, c, t] = df[S + (n*B + b)*stride + t - T + 1, c]
+        # so the maximum value is:
+        # loader[N-1, B-1, C-1, T-1] = df[S + (N*B -1)*stride + T-1, C-1]
+
+        # This maximum value might fall outside the maximum indices of df,
+        # the flag use_entire_df specifies  how to deal with this.
+        # if use_entire_df is False, then we restrict N to the maximum value:
+        # N = floor(  ((L + 1  - T  -S) / stride + 1) / B )
+
+        # Alternatively, if use_entire_df is True, then we allow N to be:
+        # N = ceil(  ((L + 1  - T  -S) / stride + 1) / B )
+        # in this case, we set df[i,j] = df[L-1, j] when i >= L.
 
 
-        self.length = int((len(self.df) - 1 - self.start_idx) / self.stride) + 1
-        if self.allow_incomplete_context:
-            leftover_rows = (len(self.df) - 1 - self.start_idx) % self.stride
-            if leftover_rows != 0:
-                self.length += 1
+        # Now, let us discuss the extra K columns.
+        # Currently  K=1 (maybe it will be bigger in later version...)
+        
+        # The first extra column is the "valid_data" mask column.
+        # We set
+        # loader[n, b, C, t] = 1 if [n,b, :, t] corresponds to valid indices in df
+        # (these indices are df[S + (n*B + b)*stride + t - T + 1, :] ).
+        # Otherwise, loader[n ,b, C, t] = 0
 
+        
+        if isinstance(df, np.ndarray):
+            L, C = df.shape
+        else:
+            L = len(df)
+            C = len(df.columns)
 
+        ideal_length = ((L +  1 - self.context_length - self.start_idx) / self.stride + 1)/self.batch_size
+
+        if self.use_entire_df:
+            self.length = int(np.ceil(ideal_length))
+        else:
+            self.length = int(np.floor(ideal_length))
+            
+        self.shuffle_seed = shuffle_seed
+        if self.shuffle_seed is not None:
+            self.rng  = np.random.default_rng(self.shuffle_seed)
+            self.reshuffle()
+
+        self.df_has_nonconsecutive_index = False
+        if isinstance(self.df, pd.DataFrame) or isinstance(self.df, dd.DataFrame) and not skip_index_check:
+            self.df_has_nonconsecutive_index = np.any(np.arange(len(self.df)) != np.array(self.df.index))
+            
     def __len__(self):
         return self.length
+
+    def reshuffle(self):
+        self.shuffled_indices = self.rng.permutation(self.length * self.batch_size)
 
     def __getitem__(self, idx: int):
         if idx >= len(self):
             raise IndexError
 
-        # df.loc appears to be inclusive of the start and end index...
-        virtual_df_end = idx * self.stride + self.start_idx
-        virtual_df_start = virtual_df_end - self.context_length + 1
+       
+        # This next line is unfortunately a bit "clever".
+        # Index [b, c, t] of the output corresponds to df[virtual_df_start + b*stride + t, c]
+        # We'd like to  make a [B, T] shape array A where A[b,t] = virtual_df_start + b * stride + t
+        # So, we make two range arrays: a "context_indices" arrau that is (0, ..., context_length - 1)
+        # and a "batch_indices" array that is (virtual_df_start, virtual_df_start + stride, ..., virtual_df_start + stride*(batch_size -1)).
+        # Then we reshape these to  [1, context_length] and [batch_size, 1] and add. Numpy broadcasting will produce
+        # the  correct array of  shape [batch_size, context_length]
+        # Unfortunately, this is even more involved  when we are shuffling the data.
+        # In this case, the  batch_indices are need to be passed through  a  permutation of the original indices.
+        #
+        context_indices  = np.arange(0, self.context_length)
+        batch_indices = np.arange(idx*self.batch_size, idx*self.batch_size + self.batch_size)
+        if self.shuffle_seed is not None:
+            # print("batch indices: ",batch_indices, "suffled indices: ",self.shuffled_indices)
+            batch_indices = self.shuffled_indices[batch_indices]
+        virtual_df_indices = self.start_idx  - self.context_length + 1 + (context_indices.reshape(1,-1) + self.stride * batch_indices.reshape(-1,1))
 
-        logical_df_end = min(virtual_df_end, len(self.df) - 1)
-        logical_df_start = max(virtual_df_start, 0)
+        # mask_column[b, t] = 0 whenever start_idx + (idx * batch_size + b -1) * stride + t - context_length + 1
+        # is not in >= 0 and < len(df).
+        mask_column = (virtual_df_indices >= 0) * (virtual_df_indices < len(self.df))
+        mask_column = mask_column.astype(self.mask_dtype).reshape((self.batch_size, 1, self.context_length))
 
-        if self.allow_incomplete_context:
-            end_padding = virtual_df_end - logical_df_end
-            start_padding = logical_df_start - virtual_df_start
+
+        logical_df_indices = np.clip(virtual_df_indices, a_min=0, a_max=len(self.df)-1)
+
+        if self.df_has_nonconsecutive_index:
+            logical_df_indices = np.array(self.df.index)[logical_df_indices]
+
+
+
+        if isinstance(self.df, np.ndarray):
+            data  = self.df[logical_df_indices]
+        elif isinstance(self.df, pd.DataFrame):
+            data = self.df.loc[logical_df_indices.flatten()]
+            data = data.to_numpy().reshape(list(logical_df_indices.shape)+[-1])
+
+        elif isinstance(self.df, dd.DataFrame):
+            data = self.df.loc[logical_df_indices.flatten()]
+            data = data.compute().to_numpy().reshape(list(logical_df_indices.shape)+[-1])
+
+        data = data.transpose((0,2,1))
+            
+
+        data = np.concatenate((data, mask_column), axis=1)
+
+        if self.return_type == 'numpy':
+            return data
         else:
-            end_padding = 0
-            start_padding = 0
-
-
-        results = self.df.loc[logical_df_start:logical_df_end]
-        if self.using_dask:
-            results = results.compute()
-        results = results.copy()
-        results["__contextmask__"] = results.notna().all(axis=1)
-
-        if end_padding > 0:
-            end_rows = pd.concat([results.iloc[[-1]]] * end_padding)
-            results = pd.concat([results, end_rows], ignore_index=True)
-            results.iloc[
-                -end_padding:, results.columns.get_loc("__contextmask__")
-            ] = False
-        # print(results)
-        if start_padding > 0:
-            start_rows = pd.concat([results.iloc[[0]]] * start_padding)
-            results = pd.concat([start_rows, results], ignore_index=True)
-            results.iloc[
-                :start_padding, results.columns.get_loc("__contextmask__")
-            ] = False
-
-        results["__labelmask__"] = results["__contextmask__"]
-        label_start = max(0, len(results["__labelmask__"]) - self.label_length)
-        results.iloc[:label_start, results.columns.get_loc("__labelmask__")] = False
-
-        if self.drop_non_numeric:
-            results = drop_non_numeric_columns(results)
-            # results = results.apply(
-            #     pd.to_numeric, errors="coerce"
-            # )  # This will convert non-numerics to NaN in numeric columns
-            # results = results.dropna()
-        if self.drop_na:
-            results = results.dropna()
-
-        results = results.to_dict(orient="list")
-
-        return results
+            return {self.columns[k]: data[:,k,:] for k in range(len(self.columns))}
+            
 
 
 # a bit like pytorch's default collate, but doesn't yell at you
