@@ -54,7 +54,10 @@ class Dataset(collections.abc.Sequence):
         skip_index_check: bool = False,
         return_type: str = 'numpy',
         columns: Optional[List[str]] = None,
+        force_numeric: bool = True,
     ):
+
+        self.force_numeric = force_numeric
 
 
         if return_type not  in ['numpy', 'dict']:
@@ -84,10 +87,6 @@ class Dataset(collections.abc.Sequence):
                 raise ValueError("number of column names does not match number of data columns")
 
 
-        if is_dataframe(df):
-            self.valid_data_dtype = bool
-        else:
-            self.valid_data_dtype = df.dtype
 
         self.df = df
 
@@ -270,18 +269,18 @@ class Dataset(collections.abc.Sequence):
         # valid_data[b, t] = 0 whenever start_idx + (idx * batch_size + b -1) * stride + t - context_length + 1
         # is not in >= 0 and < len(df).
         valid_data = (virtual_df_indices >= 0) * (virtual_df_indices < len(self.df))
-        valid_data = valid_data.astype(self.valid_data_dtype).reshape((self.batch_size, self.context_length, 1))
+        valid_data = valid_data.reshape((self.batch_size, self.context_length, 1))
 
         ### __repeat_count__ ###
         p_max = np.minimum(batch_indices + np.floor(context_indices/self.stride), np.floor((len(self.df)-self.start_idx + self.context_length - 1)/self.stride))
 
         p_min = np.maximum(np.maximum(batch_indices + np.ceil((context_indices-self.context_length+1)/self.stride), -np.floor(self.start_idx/self.stride)), 0.0)
 
-        repeat_count = (p_max - p_min + 1).astype(int)
+        repeat_count = p_max - p_min + 1
         repeat_count = repeat_count.reshape((self.batch_size, self.context_length, 1)) * valid_data
 
         ### __seen_count__ ###
-        seen_count = (batch_indices - p_min + 1).astype(int)
+        seen_count = batch_indices - p_min + 1
         seen_count = seen_count.reshape((self.batch_size, self.context_length, 1)) * valid_data
 
 
@@ -305,10 +304,10 @@ class Dataset(collections.abc.Sequence):
             data = self.df.loc[logical_df_indices.flatten()]
             data = data.compute().to_numpy().reshape((self.batch_size, self.context_length, -1)) #list(logical_df_indices.shape)+[-1])
 
-        # data = data.transpose((0,2,1))
-            
 
         data = np.concatenate((data, valid_data, repeat_count, seen_count), axis=2)
+        if self.force_numeric:
+            data  = data.astype(float)
 
         if self.return_type == 'numpy':
             return data
