@@ -313,7 +313,7 @@ class Dataset(collections.abc.Sequence):
         if self.return_type == 'numpy':
             return data
         else:
-            return {self.columns[k]: data[:,k,:] for k in range(len(self.columns))}
+            return {self.columns[k]: data[:,:,k] for k in range(len(self.columns))}
             
 
 
