@@ -99,26 +99,26 @@ class Dataset(collections.abc.Sequence):
 
         # we should think of the input df as an array of shape [L, C].
         # Each output of this loader will have shape:
-        # [B, C + K, T] where B is batch_size, T is context_length and K represents
+        # [B, T, C + K] where B is batch_size, T is context_length and K represents
         # some extra  columns that will be described shortly.
-        # That is, this loader can be viewed as an [N, B, C + K, T] dimensional array
+        # That is, this loader can be viewed as an [N, B, T, C + K,] dimensional array
 
         
         # To gain intuition about what this loader outputs, we do some calculations
-        # regarding loader[:, :C, T] (that is, ignoring the extra K columns for a moment)
+        # regarding loader[:, :, :C] (that is, ignoring the extra K columns for a moment)
         
         # First, assuming start_idx = 0 and B=1, we have:
-        # loader[n, 0, c, t] = df[n*stride+t - T +1 , c]
+        # loader[n, 0, t, c] = df[n*stride+t - T +1 , c]
         # Where we fill df[-x, c] = df[0, x] for x>0
-        # That is, loader[n, 0, c, :] is the T consecutive elements of df[:, c] ending
+        # That is, loader[n, 0, :, c] is the T consecutive elements of df[:, c] ending
         # at index n*stride.
         # When start_idx = S, we instead set:
-        # loader[n, 0, c, t] = df[S + n*stride+t - T +1 , c]
+        # loader[n, 0, t, c] = df[S + n*stride+t - T +1 , c]
 
         # In general, when B>1:
-        # loader[n, b, c, t] = df[S + (n*B + b)*stride + t - T + 1, c]
+        # loader[n, b, t, c] = df[S + (n*B + b)*stride + t - T + 1, c]
         # so the maximum value is:
-        # loader[N-1, B-1, C-1, T-1] = df[S + (N*B -1)*stride + T-1, C-1]
+        # loader[N-1, B-1, T-1, C-1] = df[S + (N*B -1)*stride + T-1, C-1]
 
         # This maximum value might fall outside the maximum indices of df,
         # the flag use_entire_df specifies  how to deal with this.
@@ -137,9 +137,9 @@ class Dataset(collections.abc.Sequence):
         ### EXTRA COLUMN 1: __valid_data__ ###
         # The first extra column is the "valid_data" mask column.
         # We set
-        # loader[n, b, C, t] = 1 if [n,b, :, t] corresponds to valid indices in df
+        # loader[n, b, t, C] = 1 if [n,b, t, :] corresponds to valid indices in df
         # (these indices are df[S + (n*B + b)*stride + t - T + 1, :] ).
-        # Otherwise, loader[n ,b, C, t] = 0
+        # Otherwise, loader[n ,b, t, C] = 0
         # That is, this  column just checks if S + (n*B + b)*stride + t - T +1 is
         # (1) non-negative, and (2) less than len(df)
 
@@ -150,12 +150,12 @@ class Dataset(collections.abc.Sequence):
         # a new column that tells how many times each row repeats. We set the  value to zero
         # when the data is out-of-range in the original df (i.e.  when __valid_data__ is False).
         # Let's do the calculution carefully.
-        # Recall that loader[n, b, :, t] corresponds to
+        # Recall that loader[n, b, t, :] corresponds to
         # df[S +(n*B +b)*stride +  t -T + 1, :].
         # Let us write 
         # F := S + (n*B + b)*stride  + t - T +1
         #
-        # Therefore loader[n, b, C+1, t] should just count the number of possible
+        # Therefore loader[n, b, t, C+1] should just count the number of possible
         # values of n', b', t'  such that
         # F = S + (n' * B + b') *stride  + t' - T + 1
         #
@@ -184,10 +184,10 @@ class Dataset(collections.abc.Sequence):
         ### EXTRA COLUMN 3: __seen_count__ ###
         # The third extra column counts how many times this row has appeared so far when iterating through the
         # data in order.
-        # That is, if we iterate through  loader[n, b, :, t] by first cycling through b from 0 to B-1 and then incrementing
+        # That is, if we iterate through  loader[n, b, t, :] by first cycling through b from 0 to B-1 and then incrementing
         # n (which will go through the data in the same order as iterating through df), then
-        # loader[n, b, C+2, t] will indicate the number of times this row has been produced before (counting the current iteration).
-        # So, loader[n, b, C+2, t] will have minimum value 1 and maximum value equal to loader[n, b, C+1,  t].
+        # loader[n, b, t, C+2] will indicate the number of times this row has been produced before (counting the current iteration).
+        # So, loader[n, b, t, C+2] will have minimum value 1 and maximum value equal to loader[n, b, C+1,  t].
         # We set the  value to zero when the data is out-of-range in the original df (i.e.  when __valid_data__ is False).
 
         # This can be used to identify specific occurances of each row. For example, we might wish to compute a loss only on labels for
@@ -197,7 +197,7 @@ class Dataset(collections.abc.Sequence):
         # the minimum value of n'*B+b' that will generate the current row is:
         # p_min = max(n*B+b + ceil((t-T+1)/stride), 0, -floor(S/stride))
         # All values of  n'*B+b' that are between the current value and p_min must have appeared exactly once each previously, so:
-        # loader[n, b, C+2, t] = n*B+b - p_min + 1
+        # loader[n, b, t, C+2] = n*B+b - p_min + 1
 
         
         
@@ -245,7 +245,7 @@ class Dataset(collections.abc.Sequence):
 
        
         # This next line is unfortunately a bit "clever".
-        # Index [b, c, t] of the output corresponds to df[virtual_df_start + b*stride + t, c]
+        # Index [b, t, c] of the output corresponds to df[virtual_df_start + b*stride + t, c]
         # We'd like to  make a [B, T] shape array A where A[b,t] = virtual_df_start + b * stride + t
         # So, we make two range arrays: a "context_indices" arrau that is (0, ..., context_length - 1)
         # and a "batch_indices" array that is (virtual_df_start, virtual_df_start + stride, ..., virtual_df_start + stride*(batch_size -1)).
@@ -270,7 +270,7 @@ class Dataset(collections.abc.Sequence):
         # valid_data[b, t] = 0 whenever start_idx + (idx * batch_size + b -1) * stride + t - context_length + 1
         # is not in >= 0 and < len(df).
         valid_data = (virtual_df_indices >= 0) * (virtual_df_indices < len(self.df))
-        valid_data = valid_data.astype(self.valid_data_dtype).reshape((self.batch_size, 1, self.context_length))
+        valid_data = valid_data.astype(self.valid_data_dtype).reshape((self.batch_size, self.context_length, 1))
 
         ### __repeat_count__ ###
         p_max = np.minimum(batch_indices + np.floor(context_indices/self.stride), np.floor((len(self.df)-self.start_idx + self.context_length - 1)/self.stride))
@@ -278,11 +278,11 @@ class Dataset(collections.abc.Sequence):
         p_min = np.maximum(np.maximum(batch_indices + np.ceil((context_indices-self.context_length+1)/self.stride), -np.floor(self.start_idx/self.stride)), 0.0)
 
         repeat_count = (p_max - p_min + 1).astype(int)
-        repeat_count = repeat_count.reshape((self.batch_size, 1, self.context_length)) * valid_data
+        repeat_count = repeat_count.reshape((self.batch_size, self.context_length, 1)) * valid_data
 
         ### __seen_count__ ###
         seen_count = (batch_indices - p_min + 1).astype(int)
-        seen_count = seen_count.reshape((self.batch_size, 1, self.context_length)) * valid_data
+        seen_count = seen_count.reshape((self.batch_size, self.context_length, 1)) * valid_data
 
 
         
@@ -299,16 +299,16 @@ class Dataset(collections.abc.Sequence):
             data  = self.df[logical_df_indices]
         elif isinstance(self.df, pd.DataFrame):
             data = self.df.loc[logical_df_indices.flatten()]
-            data = data.to_numpy().reshape(list(logical_df_indices.shape)+[-1])
+            data = data.to_numpy().reshape((self.batch_size, self.context_length, -1)) #list(logical_df_indices.shape)+[-1])
 
         elif dask_available and isinstance(self.df, dd.DataFrame):
             data = self.df.loc[logical_df_indices.flatten()]
-            data = data.compute().to_numpy().reshape(list(logical_df_indices.shape)+[-1])
+            data = data.compute().to_numpy().reshape((self.batch_size, self.context_length, -1)) #list(logical_df_indices.shape)+[-1])
 
-        data = data.transpose((0,2,1))
+        # data = data.transpose((0,2,1))
             
 
-        data = np.concatenate((data, valid_data, repeat_count, seen_count), axis=1)
+        data = np.concatenate((data, valid_data, repeat_count, seen_count), axis=2)
 
         if self.return_type == 'numpy':
             return data
