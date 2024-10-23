@@ -10,16 +10,13 @@ import loadit
 
 try:
     import dask.dataframe as dd
+    dask_available = True
+    df_type = Union[pd.DataFrame, dd.DataFrame]
 except ImportError:
-    # dask is not installed, make up a 
-    # dummy class to avoid errors when checking
-    # for dask functionality later on.
-    class dd:
-        def __init__(self):
-            self.DataFrame = None
-        
+    dask_available = False
+    df_type = pd.DataFrame
 
-def drop_non_numeric_columns(df: Union[pd.DataFrame, dd.DataFrame]):
+def drop_non_numeric_columns(df: df_type):
     # mostly copied from chatgpt :)
     def is_numeric_series(series):
         # Attempt to convert series to numeric, non-convertible entries will be NaN
@@ -42,12 +39,12 @@ def same_lists(l1, l2):
     return True
 
 def is_dataframe(df):
-    return isinstance(df, pd.DataFrame) or isinstance(df, dd.DataFrame)
+    return isinstance(df, df_type)
 
 class Dataset(collections.abc.Sequence):
     def __init__(
         self,
-        df: Union[pd.DataFrame, dd.DataFrame],
+        df: df_type,
         batch_size: int = 1,
         context_length: int = 1,
         stride: int = 1,
@@ -225,7 +222,7 @@ class Dataset(collections.abc.Sequence):
             self.reshuffle()
 
         self.df_has_nonconsecutive_index = False
-        if isinstance(self.df, pd.DataFrame) or isinstance(self.df, dd.DataFrame) and not skip_index_check:
+        if is_dataframe(self.df) and not skip_index_check:
             self.df_has_nonconsecutive_index = np.any(np.arange(len(self.df)) != np.array(self.df.index))
             
     def __len__(self):
@@ -300,7 +297,7 @@ class Dataset(collections.abc.Sequence):
             data = self.df.loc[logical_df_indices.flatten()]
             data = data.to_numpy().reshape(list(logical_df_indices.shape)+[-1])
 
-        elif isinstance(self.df, dd.DataFrame):
+        elif dask_available and isinstance(self.df, dd.DataFrame):
             data = self.df.loc[logical_df_indices.flatten()]
             data = data.compute().to_numpy().reshape(list(logical_df_indices.shape)+[-1])
 
@@ -352,7 +349,7 @@ class BatchedSequence(collections.abc.Sequence):
 
 
 def get_shuffled_batched_dataset(
-    dfs: Sequence[Union[pd.DataFrame, dd.DataFrame]],
+    dfs: Sequence[df_type],
     *ds_args,
     batch_size: int,
     shuffle_chunk_size: int = 0,
