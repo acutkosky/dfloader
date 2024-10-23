@@ -68,7 +68,7 @@ class Dataset(collections.abc.Sequence):
             if columns is not None:
                 if not same_lists(columns, list(df.columns)):
                     raise ValueError("provided columns argument is not the same as df.columns")
-            self.columns  = list(df.columns)
+            columns  = list(df.columns)
         else:
             if columns is None:
                 columns = list(range(df.shape[1]))
