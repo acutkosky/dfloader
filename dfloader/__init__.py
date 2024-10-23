@@ -215,11 +215,8 @@ class Dataset(collections.abc.Sequence):
             self.length = int(np.ceil(ideal_length))
         else:
             self.length = int(np.floor(ideal_length))
-            
-        self.shuffle_seed = shuffle_seed
-        if self.shuffle_seed is not None:
-            self.rng  = np.random.default_rng(self.shuffle_seed)
-            self.reshuffle()
+
+        self.set_shuffle_seed(shuffle_seed)
 
         self.df_has_nonconsecutive_index = False
         if is_dataframe(self.df) and not skip_index_check:
@@ -227,6 +224,13 @@ class Dataset(collections.abc.Sequence):
             
     def __len__(self):
         return self.length
+
+    def set_shuffle_seed(self, shuffle_seed):
+        self.shuffle_seed = shuffle_seed
+        if self.shuffle_seed is not None:
+            self.rng  = np.random.default_rng(self.shuffle_seed)
+            self.reshuffle()
+        
 
     def reshuffle(self):
         self.shuffled_indices = self.rng.permutation(self.length * self.batch_size)
