@@ -30,6 +30,12 @@ dependencies = [
   "loadit",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "coverage[toml]>=6.5",
+]
+
 [project.urls]
 Documentation = "https://github.com/unknown/dfloader#readme"
 Issues = "https://github.com/unknown/dfloader/issues"

@@ -4,19 +4,11 @@
 
 import numpy as np
 import pandas as pd
-from typing import Sequence, Optional, Union, List
+from typing import Sequence, Optional, List
 import collections
 import loadit
 
-try:
-    import dask.dataframe as dd
-    dask_available = True
-    df_type = Union[pd.DataFrame, dd.DataFrame]
-except ImportError:
-    dask_available = False
-    df_type = pd.DataFrame
-
-def drop_non_numeric_columns(df: df_type):
+def drop_non_numeric_columns(df: pd.DataFrame):
     # mostly copied from chatgpt :)
     def is_numeric_series(series):
         # Attempt to convert series to numeric, non-convertible entries will be NaN
@@ -39,12 +31,12 @@ def same_lists(l1, l2):
     return True
 
 def is_dataframe(df):
-    return isinstance(df, df_type)
+    return isinstance(df, pd.DataFrame)
 
 class Dataset(collections.abc.Sequence):
     def __init__(
         self,
-        df: df_type,
+        df: pd.DataFrame,
         batch_size: int = 1,
         context_length: int = 1,
         stride: int = 1,
@@ -300,10 +292,6 @@ class Dataset(collections.abc.Sequence):
             data = self.df.loc[logical_df_indices.flatten()]
             data = data.to_numpy().reshape((self.batch_size, self.context_length, -1)) #list(logical_df_indices.shape)+[-1])
 
-        elif dask_available and isinstance(self.df, dd.DataFrame):
-            data = self.df.loc[logical_df_indices.flatten()]
-            data = data.compute().to_numpy().reshape((self.batch_size, self.context_length, -1)) #list(logical_df_indices.shape)+[-1])
-
 
         data = np.concatenate((data, valid_data, repeat_count, seen_count), axis=2)
         if self.force_numeric:
@@ -352,7 +340,7 @@ class BatchedSequence(collections.abc.Sequence):
 
 
 def get_shuffled_batched_dataset(
-    dfs: Sequence[df_type],
+    dfs: Sequence[pd.DataFrame],
     *ds_args,
     batch_size: int,
     shuffle_chunk_size: int = 0,
