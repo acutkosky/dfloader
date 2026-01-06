@@ -23,12 +23,7 @@ def drop_non_numeric_columns(df: pd.DataFrame):
     return df[numeric_columns]
 
 def same_lists(l1, l2):
-    if len(l1)!=len(l2):
-        return False
-    for a,b in zip(l1,l2):
-        if a!=b:
-            return False
-    return True
+    return list(l1) == list(l2)
 
 def is_dataframe(df):
     return isinstance(df, pd.DataFrame)
@@ -80,13 +75,18 @@ class Dataset(collections.abc.Sequence):
 
 
 
-        self.df = df
-
         self.context_length = context_length
         self.batch_size = batch_size
         self.stride = stride
         self.start_idx = start_idx
         self.use_entire_df = use_entire_df
+
+        # Cache the data as a numpy array for fast indexing in __getitem__
+        if isinstance(df, np.ndarray):
+            self._data_array = df
+        else:
+            self._data_array = df.to_numpy()
+        self._data_length = len(df)
 
         # we should think of the input df as an array of shape [L, C].
         # Each output of this loader will have shape:
@@ -109,7 +109,7 @@ class Dataset(collections.abc.Sequence):
         # In general, when B>1:
         # loader[n, b, t, c] = df[S + (n*B + b)*stride + t - T + 1, c]
         # so the maximum value is:
-        # loader[N-1, B-1, T-1, C-1] = df[S + (N*B -1)*stride + T-1, C-1]
+        # loader[N-1, B-1, T-1, C-1] = df[S + (N*B -1)*stride, C-1]
 
         # This maximum value might fall outside the maximum indices of df,
         # the flag use_entire_df specifies  how to deal with this.
@@ -178,7 +178,7 @@ class Dataset(collections.abc.Sequence):
         # That is, if we iterate through  loader[n, b, t, :] by first cycling through b from 0 to B-1 and then incrementing
         # n (which will go through the data in the same order as iterating through df), then
         # loader[n, b, t, C+2] will indicate the number of times this row has been produced before (counting the current iteration).
-        # So, loader[n, b, t, C+2] will have minimum value 1 and maximum value equal to loader[n, b, C+1,  t].
+        # So, loader[n, b, t, C+2] will have minimum value 1 and maximum value equal to loader[n, b, t, C+1].
         # We set the  value to zero when the data is out-of-range in the original df (i.e.  when __valid_data__ is False).
 
         # This can be used to identify specific occurances of each row. For example, we might wish to compute a loss only on labels for
@@ -193,14 +193,7 @@ class Dataset(collections.abc.Sequence):
         
         
 
-        
-        if isinstance(df, np.ndarray):
-            L, C = df.shape
-        else:
-            L = len(df)
-            C = len(df.columns)
-
-        ideal_length = ((L +  1 - self.context_length - self.start_idx) / self.stride + 1)/self.batch_size
+        ideal_length = ((self._data_length +  1 - self.context_length - self.start_idx) / self.stride + 1)/self.batch_size
 
         if self.use_entire_df:
             self.length = int(np.ceil(ideal_length))
@@ -208,10 +201,6 @@ class Dataset(collections.abc.Sequence):
             self.length = int(np.floor(ideal_length))
 
         self.set_shuffle_seed(shuffle_seed)
-
-        self.df_has_nonconsecutive_index = False
-        if is_dataframe(self.df) and not skip_index_check:
-            self.df_has_nonconsecutive_index = np.any(np.arange(len(self.df)) != np.array(self.df.index))
             
     def __len__(self):
         return self.length
@@ -260,11 +249,11 @@ class Dataset(collections.abc.Sequence):
         ### __valid__data__ ###
         # valid_data[b, t] = 0 whenever start_idx + (idx * batch_size + b -1) * stride + t - context_length + 1
         # is not in >= 0 and < len(df).
-        valid_data = (virtual_df_indices >= 0) * (virtual_df_indices < len(self.df))
+        valid_data = (virtual_df_indices >= 0) * (virtual_df_indices < self._data_length)
         valid_data = valid_data.reshape((self.batch_size, self.context_length, 1))
 
         ### __repeat_count__ ###
-        p_max = np.minimum(batch_indices + np.floor(context_indices/self.stride), np.floor((len(self.df)-self.start_idx + self.context_length - 1)/self.stride))
+        p_max = np.minimum(batch_indices + np.floor(context_indices/self.stride), np.floor((self._data_length-self.start_idx + self.context_length - 1)/self.stride))
 
         p_min = np.maximum(np.maximum(batch_indices + np.ceil((context_indices-self.context_length+1)/self.stride), -np.floor(self.start_idx/self.stride)), 0.0)
 
@@ -279,18 +268,10 @@ class Dataset(collections.abc.Sequence):
         
 
 
-        logical_df_indices = np.clip(virtual_df_indices, a_min=0, a_max=len(self.df)-1)
+        logical_df_indices = np.clip(virtual_df_indices, a_min=0, a_max=self._data_length-1)
 
-        if self.df_has_nonconsecutive_index:
-            logical_df_indices = np.array(self.df.index)[logical_df_indices]
-
-
-
-        if isinstance(self.df, np.ndarray):
-            data  = self.df[logical_df_indices]
-        elif isinstance(self.df, pd.DataFrame):
-            data = self.df.loc[logical_df_indices.flatten()]
-            data = data.to_numpy().reshape((self.batch_size, self.context_length, -1)) #list(logical_df_indices.shape)+[-1])
+        # Use cached numpy array for fast indexing
+        data = self._data_array[logical_df_indices]
 
 
         data = np.concatenate((data, valid_data, repeat_count, seen_count), axis=2)
@@ -330,7 +311,7 @@ class BatchedSequence(collections.abc.Sequence):
         return self.length
 
     def __getitem__(self, idx: int):
-        if idx > len(self):
+        if idx >= len(self):
             raise IndexError
 
         start = idx * self.batch_size
