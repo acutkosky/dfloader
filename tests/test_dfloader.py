@@ -395,3 +395,41 @@ class TestDatasetEdgeCases:
         assert len(ds) == 2
         _, float_data, _ = ds[0]
         assert float_data.shape[1] == 5
+
+    def test_use_entire_df_pads_past_end(self):
+        """Test that use_entire_df=True pads with last row when going past end of data."""
+        # 3 rows of data
+        df = pd.DataFrame({"x": [10, 20, 30]})
+        # batch_size=2, context_length=2, stride=1
+        # ideal_length = ((3 + 1 - 2 - 0) / 1 + 1) / 2 = 1.5
+        # use_entire_df=True: ceil(1.5) = 2 batches
+        ds = Dataset(df, batch_size=2, context_length=2, stride=1, use_entire_df=True)
+        assert len(ds) == 2
+
+        # Get the last batch (idx=1)
+        # batch_indices = [2, 3]
+        # For b=0: virtual_df_indices = [1, 2] (both valid)
+        # For b=1: virtual_df_indices = [2, 3] (index 3 is past end)
+        _, float_data, extra_data = ds[1]
+
+        # Shape should be [batch_size=2, context_length=2, num_cols=1]
+        assert float_data.shape == (2, 2, 1)
+
+        # Batch element 0 (b=0): indices [1, 2] -> values [20, 30]
+        assert float_data[0, 0, 0] == 20
+        assert float_data[0, 1, 0] == 30
+
+        # Batch element 1 (b=1): indices [2, 3] -> values [30, 30 (padded)]
+        assert float_data[1, 0, 0] == 30  # valid index 2
+        assert float_data[1, 1, 0] == 30  # padded with last row value
+
+        # Check valid_data mask
+        valid_data = extra_data[:, :, 0]  # __valid_data__ is first extra column
+
+        # Batch element 0: both positions valid
+        assert valid_data[0, 0] == 1
+        assert valid_data[0, 1] == 1
+
+        # Batch element 1: first position valid, second invalid (past end)
+        assert valid_data[1, 0] == 1
+        assert valid_data[1, 1] == 0  # past end of data
