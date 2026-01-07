@@ -42,6 +42,7 @@ class Dataset(collections.abc.Sequence):
         return_type: str = 'numpy',
         columns: Optional[List[str]] = None,
         force_numeric: bool = True,
+        integer_columns: Optional[List[str]] = None,
     ):
 
         self.force_numeric = force_numeric
@@ -62,6 +63,17 @@ class Dataset(collections.abc.Sequence):
         else:
             if columns is None:
                 columns = list(range(df.shape[1]))
+        
+        # Process integer_columns
+        if integer_columns is None:
+            integer_columns = []
+        for col in integer_columns:
+            if col not in columns:
+                raise ValueError(f"integer column '{col}' not found in data columns")
+        
+        self.integer_columns = integer_columns
+        self.integer_column_indices = [columns.index(col) for col in integer_columns]
+        self.float_column_indices = [i for i in range(len(columns)) if i not in self.integer_column_indices]
 
         for c in extra_columns:
             if c in columns:
@@ -81,11 +93,28 @@ class Dataset(collections.abc.Sequence):
         self.start_idx = start_idx
         self.use_entire_df = use_entire_df
 
-        # Cache the data as a numpy array for fast indexing in __getitem__
+        # Cache the data as separate numpy arrays for integer and float columns
+        # This avoids precision loss from converting integers through floats
         if isinstance(df, np.ndarray):
-            self._data_array = df
+            if len(self.integer_column_indices) > 0:
+                self._int_data_array = df[:, self.integer_column_indices].astype(np.int32)
+            else:
+                self._int_data_array = np.empty((len(df), 0), dtype=np.int32)
+            if len(self.float_column_indices) > 0:
+                self._float_data_array = df[:, self.float_column_indices].astype(np.float32)
+            else:
+                self._float_data_array = np.empty((len(df), 0), dtype=np.float32)
         else:
-            self._data_array = df.to_numpy()
+            if len(self.integer_column_indices) > 0:
+                int_cols = [columns[i] for i in self.integer_column_indices]
+                self._int_data_array = df[int_cols].to_numpy(dtype=np.int32)
+            else:
+                self._int_data_array = np.empty((len(df), 0), dtype=np.int32)
+            if len(self.float_column_indices) > 0:
+                float_cols = [columns[i] for i in self.float_column_indices]
+                self._float_data_array = df[float_cols].to_numpy(dtype=np.float32)
+            else:
+                self._float_data_array = np.empty((len(df), 0), dtype=np.float32)
         self._data_length = len(df)
 
         # we should think of the input df as an array of shape [L, C].
@@ -270,18 +299,23 @@ class Dataset(collections.abc.Sequence):
 
         logical_df_indices = np.clip(virtual_df_indices, a_min=0, a_max=self._data_length-1)
 
-        # Use cached numpy array for fast indexing
-        data = self._data_array[logical_df_indices]
-
-
-        data = np.concatenate((data, valid_data, repeat_count, seen_count), axis=2)
-        if self.force_numeric:
-            data  = data.astype(float)
+        # Use cached numpy arrays for fast indexing - separate for int and float to avoid precision loss
+        integer_data = self._int_data_array[logical_df_indices]  # already int64
+        float_data = self._float_data_array[logical_df_indices]  # already float32
+        
+        # Extra columns (valid_data, repeat_count, seen_count) as integers
+        extra_data = np.concatenate((valid_data, repeat_count, seen_count), axis=2).astype(np.int32)
 
         if self.return_type == 'numpy':
-            return data
+            return (integer_data, float_data, extra_data)
         else:
-            return {self.columns[k]: data[:,:,k] for k in range(len(self.columns))}
+            integer_columns_list = [self.columns[k] for k in self.integer_column_indices]
+            float_columns_list = [self.columns[k] for k in self.float_column_indices]
+            extra_columns_list = ['__valid_data__', '__repeat_count__', '__seen_count__']
+            int_dict = {integer_columns_list[k]: integer_data[:,:,k] for k in range(len(integer_columns_list))}
+            float_dict = {float_columns_list[k]: float_data[:,:,k] for k in range(len(float_columns_list))}
+            extra_dict = {extra_columns_list[k]: extra_data[:,:,k] for k in range(len(extra_columns_list))}
+            return (int_dict, float_dict, extra_dict)
             
 
 
@@ -290,11 +324,24 @@ class Dataset(collections.abc.Sequence):
 def default_collate_fn(batch: Sequence):
     """
     batch is a list of examples
-    each example is a dictionary whose values are list-like objects
+    each example is either:
+    - a dictionary whose values are list-like objects
+    - a tuple of dictionaries (int_dict, float_dict, extra_dict)
     """
-
-    keys = batch[0].keys()
-    return {key: [example[key] for example in batch] for key in keys}
+    first = batch[0]
+    
+    if isinstance(first, tuple):
+        # Handle tuple of dicts (int_dict, float_dict, extra_dict)
+        result = []
+        for i in range(len(first)):
+            dicts = [example[i] for example in batch]
+            keys = dicts[0].keys()
+            result.append({key: [d[key] for d in dicts] for key in keys})
+        return tuple(result)
+    else:
+        # Handle single dict
+        keys = first.keys()
+        return {key: [example[key] for example in batch] for key in keys}
 
 
 class BatchedSequence(collections.abc.Sequence):

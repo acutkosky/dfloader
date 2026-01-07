@@ -97,29 +97,39 @@ class TestDataset:
 
     def test_dataset_getitem_shape(self, simple_df):
         ds = Dataset(simple_df, batch_size=2, context_length=3)
-        item = ds[0]
-        # Shape should be [batch_size, context_length, num_columns + 3 extra]
-        assert item.shape == (2, 3, 5)  # 2 original cols + 3 extra
+        int_data, float_data, extra_data = ds[0]
+        # With no integer_columns specified, all columns go to float_data
+        assert int_data.shape == (2, 3, 0)  # no integer columns
+        assert float_data.shape == (2, 3, 2)  # 2 original cols
+        assert extra_data.shape == (2, 3, 3)  # 3 extra columns
 
     def test_dataset_getitem_numpy_array(self, simple_array):
         ds = Dataset(simple_array, batch_size=1, context_length=2)
-        item = ds[0]
-        assert item.shape == (1, 2, 5)  # 2 original cols + 3 extra
+        int_data, float_data, extra_data = ds[0]
+        assert int_data.shape == (1, 2, 0)  # no integer columns
+        assert float_data.shape == (1, 2, 2)  # 2 original cols
+        assert extra_data.shape == (1, 2, 3)  # 3 extra columns
 
     def test_dataset_return_type_dict(self, simple_df):
         ds = Dataset(simple_df, return_type="dict")
-        item = ds[0]
-        assert isinstance(item, dict)
-        assert "x" in item
-        assert "y" in item
-        assert "__valid_data__" in item
-        assert "__repeat_count__" in item
-        assert "__seen_count__" in item
+        int_dict, float_dict, extra_dict = ds[0]
+        assert isinstance(int_dict, dict)
+        assert isinstance(float_dict, dict)
+        assert isinstance(extra_dict, dict)
+        # With no integer_columns, all columns go to float_dict
+        assert "x" in float_dict
+        assert "y" in float_dict
+        # Extra columns in extra_dict
+        assert "__valid_data__" in extra_dict
+        assert "__repeat_count__" in extra_dict
+        assert "__seen_count__" in extra_dict
 
     def test_dataset_return_type_numpy(self, simple_df):
         ds = Dataset(simple_df, return_type="numpy")
-        item = ds[0]
-        assert isinstance(item, np.ndarray)
+        int_data, float_data, extra_data = ds[0]
+        assert isinstance(int_data, np.ndarray)
+        assert isinstance(float_data, np.ndarray)
+        assert isinstance(extra_data, np.ndarray)
 
     def test_dataset_invalid_return_type(self, simple_df):
         with pytest.raises(ValueError, match="Unknown return type"):
@@ -127,9 +137,11 @@ class TestDataset:
 
     def test_dataset_negative_indexing(self, simple_df):
         ds = Dataset(simple_df)
-        last_item = ds[-1]
-        expected_last_item = ds[len(ds) - 1]
-        np.testing.assert_array_equal(last_item, expected_last_item)
+        last_int, last_float, last_extra = ds[-1]
+        expected_int, expected_float, expected_extra = ds[len(ds) - 1]
+        np.testing.assert_array_equal(last_int, expected_int)
+        np.testing.assert_array_equal(last_float, expected_float)
+        np.testing.assert_array_equal(last_extra, expected_extra)
 
     def test_dataset_index_out_of_bounds(self, simple_df):
         ds = Dataset(simple_df)
@@ -145,27 +157,34 @@ class TestDataset:
         ds1 = Dataset(simple_df, batch_size=2, shuffle_seed=42)
         ds2 = Dataset(simple_df, batch_size=2, shuffle_seed=42)
         # Same seed should produce same results
-        np.testing.assert_array_equal(ds1[0], ds2[0])
+        int1, float1, extra1 = ds1[0]
+        int2, float2, extra2 = ds2[0]
+        np.testing.assert_array_equal(int1, int2)
+        np.testing.assert_array_equal(float1, float2)
+        np.testing.assert_array_equal(extra1, extra2)
 
     def test_dataset_different_seeds_different_results(self, simple_df):
         ds1 = Dataset(simple_df, batch_size=2, shuffle_seed=42)
         ds2 = Dataset(simple_df, batch_size=2, shuffle_seed=123)
         # Different seeds should produce different results (with high probability)
-        assert not np.array_equal(ds1[0], ds2[0])
+        _, float1, _ = ds1[0]
+        _, float2, _ = ds2[0]
+        assert not np.array_equal(float1, float2)
 
     def test_dataset_reshuffle(self, simple_df):
         ds = Dataset(simple_df, batch_size=2, shuffle_seed=42)
-        first_result = ds[0].copy()
+        _, first_float, _ = ds[0]
+        first_float = first_float.copy()
         ds.reshuffle()
-        second_result = ds[0]
+        _, second_float, _ = ds[0]
         # After reshuffle, results should be different
-        assert not np.array_equal(first_result, second_result)
+        assert not np.array_equal(first_float, second_float)
 
     def test_dataset_valid_data_column(self, simple_df):
         ds = Dataset(simple_df, context_length=3, return_type="dict")
-        item = ds[0]
+        _, _, extra_dict = ds[0]
         # First context window includes padding, so some valid_data should be 0
-        valid_data = item["__valid_data__"]
+        valid_data = extra_dict["__valid_data__"]
         # At index 0 with context_length=3, the first two positions are invalid (negative indices)
         assert valid_data[0, 0] == 0  # invalid
         assert valid_data[0, 1] == 0  # invalid
@@ -180,29 +199,31 @@ class TestDataset:
     def test_dataset_stride(self, simple_df):
         ds = Dataset(simple_df, stride=2, context_length=1)
         # With stride=2 and context_length=1, we get every other row
-        item0 = ds[0]
-        item1 = ds[1]
+        _, float0, _ = ds[0]
+        _, float1, _ = ds[1]
         # Item 0 should correspond to df row 0
-        assert item0[0, 0, 0] == 1  # x value at row 0
+        assert float0[0, 0, 0] == 1  # x value at row 0
         # Item 1 should correspond to df row 2
-        assert item1[0, 0, 0] == 3  # x value at row 2
+        assert float1[0, 0, 0] == 3  # x value at row 2
 
     def test_dataset_start_idx(self, simple_df):
         ds = Dataset(simple_df, start_idx=2, context_length=1)
-        item = ds[0]
+        _, float_data, _ = ds[0]
         # With start_idx=2, first item should be row 2
-        assert item[0, 0, 0] == 3  # x value at row 2
+        assert float_data[0, 0, 0] == 3  # x value at row 2
 
     def test_dataset_force_numeric_true(self, simple_df):
         ds = Dataset(simple_df, force_numeric=True)
-        item = ds[0]
-        assert item.dtype == float
+        int_data, float_data, extra_data = ds[0]
+        assert float_data.dtype == np.float32
+        assert int_data.dtype == np.int32
+        assert extra_data.dtype == np.int32
 
     def test_dataset_nonconsecutive_index(self):
         df = pd.DataFrame({"x": [1, 2, 3]}, index=[10, 20, 30])
         ds = Dataset(df, context_length=1)
-        item = ds[0]
-        assert item[0, 0, 0] == 1
+        _, float_data, _ = ds[0]
+        assert float_data[0, 0, 0] == 1
 
 
 class TestBatchedSequence:
@@ -245,7 +266,13 @@ class TestGetShuffledBatchedDataset:
         # Should be iterable and return batched data
         assert len(dataset) > 0
         batch = dataset[0]
-        assert isinstance(batch, dict)
+        # Now returns tuple of (int_dict, float_dict, extra_dict)
+        assert isinstance(batch, tuple)
+        assert len(batch) == 3
+        int_dict, float_dict, extra_dict = batch
+        assert isinstance(int_dict, dict)
+        assert isinstance(float_dict, dict)
+        assert isinstance(extra_dict, dict)
 
     def test_with_shuffle_chunk_size(self):
         df = pd.DataFrame({"x": range(10), "y": range(10, 20)})
@@ -255,35 +282,116 @@ class TestGetShuffledBatchedDataset:
         assert len(dataset) > 0
 
 
+class TestIntegerColumns:
+    def test_integer_columns_basic(self):
+        df = pd.DataFrame({"x": [1, 2, 3, 4, 5], "y": [10.5, 20.5, 30.5, 40.5, 50.5]})
+        ds = Dataset(df, integer_columns=["x"])
+        int_data, float_data, extra_data = ds[0]
+        # x should be in int_data, y in float_data, extra columns separate
+        assert int_data.shape[2] == 1  # just x
+        assert float_data.shape[2] == 1  # just y
+        assert extra_data.shape[2] == 3  # 3 extra columns
+        assert int_data.dtype == np.int32
+        assert float_data.dtype == np.float32
+        assert extra_data.dtype == np.int32
+
+    def test_integer_columns_multiple(self):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "c": [1.0, 2.0, 3.0]})
+        ds = Dataset(df, integer_columns=["a", "b"])
+        int_data, float_data, extra_data = ds[0]
+        assert int_data.shape[2] == 2  # a and b
+        assert float_data.shape[2] == 1  # just c
+        assert extra_data.shape[2] == 3  # 3 extra columns
+
+    def test_integer_columns_values_preserved(self):
+        df = pd.DataFrame({"x": [1, 2, 3, 4, 5], "y": [10, 20, 30, 40, 50]})
+        ds = Dataset(df, context_length=1, integer_columns=["x"])
+        int_data, float_data, _ = ds[0]
+        assert int_data[0, 0, 0] == 1
+        assert float_data[0, 0, 0] == 10.0
+
+    def test_integer_columns_dict_return_type(self):
+        df = pd.DataFrame({"x": [1, 2, 3], "y": [10.0, 20.0, 30.0]})
+        ds = Dataset(df, return_type="dict", integer_columns=["x"])
+        int_dict, float_dict, extra_dict = ds[0]
+        assert "x" in int_dict
+        assert "y" in float_dict
+        assert "__valid_data__" in extra_dict
+        assert int_dict["x"].dtype == np.int32
+        assert float_dict["y"].dtype == np.float32
+        assert extra_dict["__valid_data__"].dtype == np.int32
+
+    def test_integer_columns_empty_list(self):
+        df = pd.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]})
+        ds = Dataset(df, integer_columns=[])
+        int_data, float_data, extra_data = ds[0]
+        assert int_data.shape[2] == 0
+        assert float_data.shape[2] == 2  # 2 original
+        assert extra_data.shape[2] == 3  # 3 extra
+
+    def test_integer_columns_invalid_column(self):
+        df = pd.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]})
+        with pytest.raises(ValueError, match="integer column 'z' not found"):
+            Dataset(df, integer_columns=["z"])
+
+    def test_float32_dtype(self):
+        df = pd.DataFrame({"x": [1.0, 2.0, 3.0]})
+        ds = Dataset(df)
+        _, float_data, _ = ds[0]
+        assert float_data.dtype == np.float32
+
+    def test_integers_preserved(self):
+        # Test that integers are stored correctly without float conversion
+        test_int = 123456789  # Fits in int32
+        df = pd.DataFrame({"id": [test_int, test_int + 1, test_int + 2]})
+        ds = Dataset(df, context_length=1, integer_columns=["id"])
+        int_data, _, _ = ds[0]
+        assert int_data[0, 0, 0] == test_int
+        assert int_data.dtype == np.int32
+        
+    def test_integer_columns_order_preserved(self):
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6], "c": [7, 8, 9]})
+        ds = Dataset(df, context_length=1, integer_columns=["a", "c"])
+        int_data, float_data, extra_data = ds[0]
+        # a and c should be integers, b should be float
+        assert int_data.shape[2] == 2
+        assert float_data.shape[2] == 1  # just b
+        assert extra_data.shape[2] == 3  # 3 extra
+        assert int_data[0, 0, 0] == 1  # a
+        assert int_data[0, 0, 1] == 7  # c
+        assert float_data[0, 0, 0] == 4.0  # b
+
+
 class TestDatasetEdgeCases:
     def test_single_row_dataframe(self):
         df = pd.DataFrame({"x": [1], "y": [2]})
         ds = Dataset(df)
         # Formula: ceil(((1 + 1 - 1 - 0) / 1 + 1) / 1) = ceil(2) = 2
         assert len(ds) == 2
-        item = ds[0]
-        assert item.shape[0] == 1
+        _, float_data, _ = ds[0]
+        assert float_data.shape[0] == 1
 
     def test_single_column_dataframe(self):
         df = pd.DataFrame({"x": [1, 2, 3, 4, 5]})
         ds = Dataset(df)
-        item = ds[0]
-        # 1 original col + 3 extra = 4 columns
-        assert item.shape[2] == 4
+        _, float_data, extra_data = ds[0]
+        # 1 original col, 3 extra cols separate
+        assert float_data.shape[2] == 1
+        assert extra_data.shape[2] == 3
 
     def test_large_context_length(self):
         # When context_length > data_length, the formula can produce negative length
         # Use a case where it still works: context_length=3 with 5 rows
         df = pd.DataFrame({"x": [1, 2, 3, 4, 5]})
         ds = Dataset(df, context_length=3)
-        item = ds[0]
+        _, float_data, _ = ds[0]
         # Should handle context with padding at the start
-        assert item.shape[1] == 3
+        assert float_data.shape[1] == 3
 
     def test_context_length_equals_data_length(self):
         df = pd.DataFrame({"x": [1, 2, 3, 4, 5]})
         ds = Dataset(df, context_length=5)
         # Formula: ceil(((5 + 1 - 5 - 0) / 1 + 1) / 1) = ceil(2) = 2
         assert len(ds) == 2
-        item = ds[0]
-        assert item.shape[1] == 5
+        _, float_data, _ = ds[0]
+        assert float_data.shape[1] == 5
