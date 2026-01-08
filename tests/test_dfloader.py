@@ -80,9 +80,10 @@ class TestDataset:
 
     def test_dataset_length_default(self, simple_df):
         ds = Dataset(simple_df)
-        # Formula: ceil(((L + 1 - context_length - start_idx) / stride + 1) / batch_size)
-        # = ceil(((5 + 1 - 1 - 0) / 1 + 1) / 1) = ceil(6) = 6
-        assert len(ds) == 6
+        # With use_entire_df=True (default), we ensure all data is covered
+        # num_windows = ceil((L-1-S)/stride) + 1 = ceil(4/1) + 1 = 5
+        # length = ceil(5/1) = 5
+        assert len(ds) == 5
 
     def test_dataset_length_with_batch_size(self, simple_df):
         ds = Dataset(simple_df, batch_size=2)
@@ -366,8 +367,9 @@ class TestDatasetEdgeCases:
     def test_single_row_dataframe(self):
         df = pd.DataFrame({"x": [1], "y": [2]})
         ds = Dataset(df)
-        # Formula: ceil(((1 + 1 - 1 - 0) / 1 + 1) / 1) = ceil(2) = 2
-        assert len(ds) == 2
+        # With use_entire_df=True, num_windows = ceil((1-1-0)/1) + 1 = 1
+        # Only 1 window needed to see the single row
+        assert len(ds) == 1
         _, float_data, _ = ds[0]
         assert float_data.shape[0] == 1
 
@@ -391,8 +393,10 @@ class TestDatasetEdgeCases:
     def test_context_length_equals_data_length(self):
         df = pd.DataFrame({"x": [1, 2, 3, 4, 5]})
         ds = Dataset(df, context_length=5)
-        # Formula: ceil(((5 + 1 - 5 - 0) / 1 + 1) / 1) = ceil(2) = 2
-        assert len(ds) == 2
+        # With use_entire_df=True, num_windows = ceil((5-1-0)/1) + 1 = 5
+        # We need 5 windows to cover all data points (0-4)
+        # Window 4 is the first that covers the last data point (index 4)
+        assert len(ds) == 5
         _, float_data, _ = ds[0]
         assert float_data.shape[1] == 5
 
@@ -433,3 +437,36 @@ class TestDatasetEdgeCases:
         # Batch element 1: first position valid, second invalid (past end)
         assert valid_data[1, 0] == 1
         assert valid_data[1, 1] == 0  # past end of data
+
+    def test_use_entire_df_with_stride_covers_all_data(self):
+        """Test that use_entire_df=True with stride > 1 covers all data points."""
+        # 6 rows of data (values 100-105)
+        df = pd.DataFrame({"x": [100, 101, 102, 103, 104, 105]})
+        ds = Dataset(df, batch_size=1, context_length=3, stride=2, use_entire_df=True)
+
+        # With the correct formula:
+        # num_windows = ceil((6-1-0)/2) + 1 = ceil(2.5) + 1 = 3 + 1 = 4
+        assert len(ds) == 4
+
+        # Collect all values seen across all windows
+        all_values = set()
+        for i in range(len(ds)):
+            _, float_data, extra_data = ds[i]
+            valid_data = extra_data[0, :, 0]
+            for t in range(3):
+                if valid_data[t] == 1:
+                    all_values.add(float_data[0, t, 0])
+
+        # Should see all 6 values (100-105)
+        assert all_values == {100, 101, 102, 103, 104, 105}
+
+        # Verify the last window (idx=3) includes value 105
+        _, float_data, extra_data = ds[3]
+        valid_data = extra_data[0, :, 0]
+        # Window 3: indices [4, 5, 6] -> values [104, 105, 105 (padded)]
+        assert float_data[0, 0, 0] == 104  # valid
+        assert float_data[0, 1, 0] == 105  # valid (the last data point!)
+        assert float_data[0, 2, 0] == 105  # padded
+        assert valid_data[0] == 1  # index 4 valid
+        assert valid_data[1] == 1  # index 5 valid
+        assert valid_data[2] == 0  # index 6 invalid (past end)

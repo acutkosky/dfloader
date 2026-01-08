@@ -145,9 +145,12 @@ class Dataset(collections.abc.Sequence):
         # if use_entire_df is False, then we restrict N to the maximum value:
         # N = floor(  ((L + 1  - T  -S) / stride + 1) / B )
 
-        # Alternatively, if use_entire_df is True, then we allow N to be:
-        # N = ceil(  ((L + 1  - T  -S) / stride + 1) / B )
-        # in this case, we set df[i,j] = df[L-1, j] when i >= L.
+        # Alternatively, if use_entire_df is True, we ensure all data points are covered.
+        # Window n covers up to df index S + n*stride. To cover the last data point (L-1):
+        # S + n*stride >= L-1, so n >= (L-1-S)/stride
+        # n_max = ceil((L-1-S)/stride), total windows = n_max + 1
+        # With batching: N = ceil((ceil((L-1-S)/stride) + 1) / B)
+        # In this case, we set df[i,j] = df[L-1, j] when i >= L.
 
 
         # Now, let us discuss the extra K columns.
@@ -222,11 +225,15 @@ class Dataset(collections.abc.Sequence):
         
         
 
-        ideal_length = ((self._data_length +  1 - self.context_length - self.start_idx) / self.stride + 1)/self.batch_size
-
         if self.use_entire_df:
-            self.length = int(np.ceil(ideal_length))
+            # Ensure all data points are covered
+            # Window n covers up to df index S + n*stride
+            # To cover L-1: n >= (L-1-S)/stride, so n_max = ceil((L-1-S)/stride)
+            # Total windows = n_max + 1
+            num_windows = int(np.ceil((self._data_length - 1 - self.start_idx) / self.stride)) + 1
+            self.length = int(np.ceil(num_windows / self.batch_size))
         else:
+            ideal_length = ((self._data_length + 1 - self.context_length - self.start_idx) / self.stride + 1) / self.batch_size
             self.length = int(np.floor(ideal_length))
 
         self.set_shuffle_seed(shuffle_seed)
